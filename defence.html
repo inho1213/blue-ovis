@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv='Content-Type' content='text/html; charset=utf-8'>
+    <title>Defense</title>
+</head>
+<body style="-webkit-user-select: none;">
+    <script type="text/javascript">
+        var BlueOvisDefense = {
+        	TILE: {
+        		FINISH: -2,
+        		START: -1,
+        		BLANK: 0,
+        		PATH: 1
+        	},
+        	
+        	ENEMY: {
+        		ALIVE: 'alive',
+        		DEAD: 'dead',
+        		SURVIVE: 'survive'
+        	},
+        	
+        	WEAPON: {
+        		AVAILABLE: 'available',
+        		UNAVAILABLE: 'unavailable'
+        	},
+        	
+        	initialize: function() {
+        		this.row = 20;
+        		this.column = 10;
+        		this.tileSize = 25;
+        		this.mapDataIdRegExp = /map_([0-9]+)_([0-9]+)/;
+        		this.attackers = {};
+        		this.currentWaveIndex = 0;
+        		this.baseSpeed = 1000;
+        	},
+        	
+        	setMapData: function(mapData) {
+        		this.mapData = mapData;
+        	},
+        	
+        	setWeaponData: function(weaponData) {
+        		this.weaponData = weaponData;
+        	},
+        	
+        	setEnemyData: function(enemyData) {
+        		this.enemyData = enemyData;
+        	},
+        	
+        	setWaveData: function(waveData) {
+        		this.waveData = waveData;
+        	},
+        	
+        	ready: function() {
+        		this.map = this.createMap();
+        		this.path = this.findPath();
+        		this.weapons = this.createWeapons();
+        		this.weaponRange = this.createWeaponRange();
+        		this.enemies = this.createEnemies();
+        		
+        		this.bindGlobalEventHandler();
+        		
+        		document.body.appendChild(this.map);
+        		document.body.appendChild(this.weapons);
+        		document.body.appendChild(this.weaponRange);
+        	},
+        	
+        	createMap: function() {
+        		var map = this.createElement({
+                    id: 'map',
+                    style: {
+                        position: 'absolute',
+                        width: (this.tileSize * this.column) + 'px',
+                        height: (this.tileSize * this.row) + 'px',
+                        left: '0px',
+                        top: '0px',
+                        border: '1px solid black',
+                        backgroundColor: 'lightgray',
+                        overflow: 'hidden'
+                    }
+                });
+                
+                for (var i = 0; i < this.row; i++) {
+                    var currentRow = i * this.column; 
+                    
+                    for (var j = 0; j < this.column; j++) {
+                        var option = {
+                            id: 'map_' + i + '_' + j,
+                            style: {
+                                position: 'absolute',
+                                width: this.tileSize + 'px', 
+                                height: this.tileSize + 'px',
+                                left: (j * this.tileSize) + 'px',
+                                top: (i * this.tileSize) + 'px'
+                            }
+                        };
+                        
+                        switch (this.mapData[currentRow + j]) {
+                        case BlueOvisDefense.TILE.BLANK:
+                            option.style.zIndex = 2;
+                            break;
+                        case BlueOvisDefense.TILE.PATH:
+                            option.style.zIndex = 1;
+                            option.style.background = 'black';
+                            break;
+                        }
+                        
+                        var tile = this.createElement(option);
+                        
+                        tile.addEventListener('dragover', function(event) {
+                            event.preventDefault();
+                        });
+                        
+                        tile.addEventListener('dragenter', function(event) {
+                            var match, index, range, size, target = event.target;
+                            
+                            if (match = this.mapDataIdRegExp.exec(target.id)) {
+                                index = (match[1] * 1 * this.column) + (match[2] * 1);
+                                
+                                if (this.mapData[index] === BlueOvisDefense.TILE.BLANK) {
+                                    target.style.background = 'rgba(0, 255, 0, 0.5)';
+                                    
+                                    range = event.dataTransfer.getData('range') * 1;
+                                    size = this.tileSize * (2 * range + 1);
+                                    
+                                    document.body.appendChild(this.createElementFrom(this.weaponRange, {
+                                        id: 'clonedWeaponRange',
+                                        style: { 
+                                        	width: size + 'px',
+                                            height: size + 'px',
+                                            borderRadius: '5px',
+                                            visibility: 'visible',
+                                            webkitTransform: 'translate3d(' + (this.getPixel(target.style.left) + this.tileSize / 2 - size / 2) + 'px, ' + (this.getPixel(target.style.top) + this.tileSize / 2 - size / 2) + 'px, 0)'
+                                        }
+                                    }));
+                                } else {
+                                    target.style.background = 'rgba(255, 0, 0, 0.5)';
+                                }
+                            }
+                            
+                            event.preventDefault();
+                        }.bind(this));
+                        
+                        tile.addEventListener('dragleave', function(event) {
+                            var match, index, element, target = event.target;
+                            
+                            if (match = this.mapDataIdRegExp.exec(target.id)) {
+                                index = (match[1] * 1 * this.column) + (match[2] * 1);
+                                
+                                if (this.mapData[index] === BlueOvisDefense.TILE.PATH) {
+                                    target.style.background = 'black';
+                                } else {
+                                    target.style.background = '';
+                                    
+                                    if (this.mapData[index] === BlueOvisDefense.TILE.BLANK && (element = document.getElementById('clonedWeaponRange'))) {
+                                    	document.body.removeChild(element);
+                                    }
+                                }
+                            }
+                            
+                            event.preventDefault();
+                        }.bind(this));
+                        
+                        tile.addEventListener('drop', function(event) {
+                            var match, row, column, index, target = event.target, weapon, missile;
+                            
+                            if (match = this.mapDataIdRegExp.exec(target.id)) {
+                            	row = match[1] * 1;
+                            	column = match[2] * 1;
+                            	
+                                index = row * this.column + column;
+                                
+                                if (this.mapData[index] === BlueOvisDefense.TILE.BLANK) {
+                                	this.mapData[index] = event.dataTransfer.getData('type');
+                                    
+                                	weapon = this.createElement({
+                                        className: 'weapon',
+                                        style: {
+                                            position: 'absolute',
+                                            width: (this.tileSize / 2) + 'px',
+                                            height: (this.tileSize / 2) + 'px',
+                                            borderRadius: this.tileSize + 'px',
+                                            left: (this.tileSize / 4) + 'px',
+                                            top: (this.tileSize / 4) + 'px',
+                                            background: event.dataTransfer.getData('color')
+                                        }
+                                    });
+                                	
+                                	missile = this.createElement({
+                                        id: 'missile_' + row + '_' + column,
+                                        style: {
+                                            position: 'absolute',
+                                            width: '4px',
+                                            height: '4px',
+                                            borderRadius: '4px',
+                                            top: (this.tileSize * row + this.tileSize / 2 - 2) + 'px',
+                                            left: (this.tileSize * column + this.tileSize / 2 - 2) + 'px',
+                                            backgroundColor: 'yellow',
+                                            opacity: 0,
+                                            zIndex: 2,
+                                            webkitTransition: '-webkit-transform 0.2s'
+                                        },
+                                        listener: {
+                                            webkitTransitionEnd: function(event) {
+                                            	var target = event.target;
+                                                target.style.opacity = 0;
+                                                target.style.webkitTransform = '';
+                                            }
+                                        }
+                                    });
+                                	
+                                    target.dataset.damage = event.dataTransfer.getData('damage');
+                                    target.dataset.speed = event.dataTransfer.getData('speed');
+                                    target.dataset.range = event.dataTransfer.getData('range');
+                                    target.dataset.status = BlueOvisDefense.WEAPON.AVAILABLE;
+                                    
+                                    target.style.cursor = 'pointer';
+                                    target.style.background = '';
+                                    
+                                    this.setAttacker(row, column, target.dataset);
+
+                                    target.appendChild(weapon);
+                                    document.body.appendChild(missile);
+                                } else if (this.mapData[index] === BlueOvisDefense.TILE.PATH) {
+                                    target.style.background = 'black';
+                                } else {
+                                    target.style.background = '';
+                                }
+                            }
+                            
+                            if (element = document.getElementById('clonedWeaponRange')) {
+                                document.body.removeChild(element);
+                            }
+
+                            event.preventDefault();
+                        }.bind(this));
+                        
+                        tile.addEventListener('click', function(event) {
+                            var match, range, size, target = event.target;
+                            
+                            if (target.className === 'weapon') {
+                                target = target.parentNode;
+                            }
+                            
+                            if ((match = this.mapDataIdRegExp.exec(target.id)) && (range = target.dataset.range)) {
+                                range *= 1;
+                                size = this.tileSize * (2 * range + 1);
+                                
+                                this.weaponRange.style.width = size + 'px';
+                                this.weaponRange.style.height = size + 'px';
+                                this.weaponRange.style.borderRadius = '5px';
+                                this.weaponRange.style.visibility = 'visible';
+                                this.weaponRange.style.webkitTransform = 'translate3d(' + (this.getPixel(target.style.left) + this.tileSize / 2 - size / 2) + 'px, ' + (this.getPixel(target.style.top) + this.tileSize / 2 - size / 2) + 'px, 0)';
+                            } else {
+                            	this.weaponRange.style.visibility = 'hidden';
+                            }
+                            
+                            event.stopPropagation();
+                        }.bind(this));
+                        
+                        map.appendChild(tile);
+                    }
+                }
+                
+                return map;
+        	},
+        	
+        	setAttacker: function(row, column, dataset) {
+        		var i, maxRow, j, maxColumn, currentRow, index, attackers;
+        		var range = dataset.range * 1;
+        		
+        		for (i = row - range, maxRow = row + range + 1; i < maxRow; i++) {
+        			currentRow = i * this.column;
+                    
+                    for (j = column - range, maxColumn = column + range + 1; j < maxColumn; j++) {
+                        index = currentRow + j;
+                        
+                        if (this.mapData[index] === BlueOvisDefense.TILE.PATH) {
+                        	attackers = this.attackers[index] || [];
+                        	attackers.push({
+                                row: row,
+                                column: column,
+                                damage: dataset.damage,
+                                speed: dataset.speed
+                            });
+                        	
+                            this.attackers[index] = attackers;
+                        }
+                    }
+                }
+        	},
+        	
+        	createWeapons: function() {
+        		var weapons = this.createElement({
+                    id: 'weapon',
+                    style: {
+                        position: 'absolute',
+                        left: '260px',
+                        top: '0px',
+                        width: '100px',
+                        height: (this.weaponData.length * this.tileSize) + 'px'
+                    }
+                });
+        		
+        		this.weaponData.forEach(function(data) {
+        			var weapon = this.createElement({
+                        draggable: true,
+                        dataset: {
+                            type: data.type,
+                            damage: data.damage,
+                            speed: data.speed,
+                            range: data.range,
+                            color: data.color
+                        },
+                        style: {
+                            width: this.tileSize + 'px',
+                            height: this.tileSize + 'px',
+                            background: data.color
+                        }
+                    });
+        			
+        			weapon.addEventListener('dragstart', function(event) {
+                        var image, size = this.tileSize / 2, target = event.target;
+                        
+                        for (var property in target.dataset) {
+                            event.dataTransfer.setData(property, target.dataset[property]);
+                        }
+                        
+                        image = this.createElementFrom(target, {
+                        	id: 'clonedImage',
+                        	style: {
+                        		position: 'absolute',
+                        		width: size + 'px',
+                        		height: size + 'px',
+                        		right: '0px',
+                        		bottom: '0px',
+                        		borderRadius: this.tileSize + 'px',
+                        		visibility: 'visible'
+                        	}
+                        });
+                        
+                        document.body.appendChild(image);
+                        
+                        event.dataTransfer.setDragImage(image, size / 2, size / 2);
+                    }.bind(this));
+
+                    weapon.addEventListener('drag', function(event) {
+                        document.getElementById('clonedImage').style.visibility = 'hidden';
+                        this.weaponRange.style.visibility = 'hidden';
+                    }.bind(this));
+                    
+                    weapon.addEventListener('dragend', function(event) {
+                        document.body.removeChild(document.getElementById('clonedImage'));
+                    });
+                    
+                    weapons.appendChild(weapon);
+        		}, this);
+        		
+        		return weapons;
+        	},
+        	
+        	createWeaponRange: function() {
+        		return this.createElement({
+        			id: 'weaponRange',
+        			style: {
+        				position: 'absolute',
+        				left: '0px',
+        				top: '0px',
+        				opacity: 0.75,
+        				border: '5px solid yellow',
+        				boxSizing: 'border-box',
+        				visibility: 'hidden',
+        				zIndex: 1
+        			}		
+        		});
+        	},
+        	
+        	createEnemies: function() {
+        		var enemies = {};
+        		
+        		this.enemyData.forEach(function(data) {
+        			var enemy = this.createElement({
+                        className: 'enemy',
+                        dataset: {
+                            type: data.type,
+                            energy: data.energy,
+                            currentEnergy: data.energy,
+                            resistance: data.resistance,
+                            speed: data.speed,
+                            color: data.color
+                        },
+                        style: {
+                        	position: 'absolute',
+                            left: '0px',
+                            top: '0px',
+                            width: this.tileSize + 'px',
+                            height: this.tileSize + 'px',
+                            borderRadius: this.tileSize + 'px',
+                            boxSizing: 'border-box',
+                            background: data.color,
+                            zIndex: 1
+                        }
+                    });
+        			
+        			var energyBar = this.createElement({
+                        style: {
+                        	position: 'absolute',
+                            right: '0px',
+                            bottom: '0px',
+                            width: this.tileSize + 'px',
+                            height: '4px',
+                            background: 'white',
+                            boxSizing: 'border-box',
+                            border: '1px solid lightgray',
+                            overflow: 'hidden'
+                        }
+                    });
+        			
+        			energyBar.appendChild(this.createElement({
+        				style: {
+        					position: 'absolute',
+        					left: '0px',
+        					top: '0px',
+                            width: this.tileSize + 'px',
+                            height: '4px',
+                            background: 'red',
+                        }
+        			}));
+        			
+        			enemy.appendChild(energyBar);
+        			
+        			enemies[data.type] = enemy;
+        		}, this);
+        		
+        		return enemies;
+        	},
+        	
+        	createElement: function(option) {
+        		return this.setElementOption(document.createElement('div'), option);
+            },
+            
+            createElementFrom: function(element, option) {
+            	return this.setElementOption(element.cloneNode(true), option);
+            },
+            
+            setElementOption: function(element, option) {
+            	var values, value;
+            	
+            	for (var property in option) {
+            		switch (property) {
+					case 'style':
+					case 'dataset':
+					    values = option[property];
+                        
+                        for (value in values) {
+                            element[property][value] = values[value];
+                        }
+                        
+						break;
+					case 'listener':
+						values = option[property];
+						
+						for (value in values) {
+							element.addEventListener(value, values[value]);
+						}
+						
+					    break;
+					default:
+						element[property] = option[property];
+					    break;
+					}
+                }
+                
+                return element;
+            },
+            
+            getPixel: function(target) {
+            	return target.split('px')[0] * 1;
+            },
+            
+            findPath: function() {
+            	var visited = [];
+            	var path = [];
+            	var startIndex = this.getStartIndex();
+            	
+            	if (startIndex < 0) {
+            		return path;
+            	}
+            	
+            	path.push(this.getPositionByIndex(startIndex));
+            	visited[startIndex] = 1;
+            	
+            	this.findNextPath(startIndex, path, visited);
+            	this.setStartPath(path);
+            	this.setFinishPath(path);
+            	
+            	return path;
+            },
+            
+            getStartIndex: function() {
+            	for (var i = 0, length = this.mapData.length; i < length; i++) {
+            		if (i < this.column && this.mapData[i]) {
+            			return i;
+            		}
+            	}
+            	
+            	return -1;
+            },
+            
+            findNextPath: function(startIndex, path, visited) {
+                var nextDirectionIndices = this.getNextDirectionIndices(startIndex);
+                var nextDirection, nextIndex, nextPosition, findNext = false;
+                
+                for (nextDirection in nextDirectionIndices) {
+                    nextIndex = nextDirectionIndices[nextDirection];
+                    
+                    if (nextIndex !== null && this.mapData[nextIndex] && !visited[nextIndex] ) {
+                    	path.push(this.getPositionByIndex(nextIndex));
+                    	visited[nextIndex] = 1;
+                    	findNext = true;
+                    	break;
+                    }
+                }
+                
+                if (findNext) {
+                	this.findNextPath(nextIndex, path, visited);                	
+                }
+            },
+            
+            getNextDirectionIndices: function(index) {
+            	return {
+            		left: this.getValidIndex(index - 1),
+            		right: this.getValidIndex(index + 1),
+            		up: this.getValidIndex(index - this.column),
+            		down: this.getValidIndex(index + this.column)
+            	};
+            },
+            
+            getValidIndex: function(index) {
+                return -1 < index && index < this.row * this.column ? index : null;             	
+            },
+            
+            getPositionByIndex: function(index) {
+            	var y = Math.floor(index / this.column);
+            	var x = index % this.column;
+            	
+            	return {
+            		x: this.tileSize * x,
+            		y: this.tileSize * y,
+            		index: index,
+            		column: x,
+            		row: y
+            	}
+            },
+            
+            setStartPath: function(path) {
+            	var first = path[0];
+            	var second = path[1];
+            	
+            	if (second.x - first.x > 0) {
+            		path.unshift({
+            			x: -this.tileSize,
+            			y: first.y,
+            			index: BlueOvisDefense.TILE.START
+            		});
+            	} else {
+            		path.unshift({
+                        x: first.x,
+                        y: -this.tileSize,
+                        index: BlueOvisDefense.TILE.START
+                    });
+            	}
+            },
+            
+            setFinishPath: function(path) {
+            	var last = path[path.length - 1];
+                var semiLast = path[path.length - 2];
+                
+                if (last.x - semiLast.x > 0) {
+                    path.push({
+                        x: last.x + this.tileSize,
+                        y: last.y,
+                        index: BlueOvisDefense.TILE.FINISH
+                    });
+                } else {
+                    path.push({
+                        x: last.x,
+                        y: last.y + this.tileSize,
+                        index: BlueOvisDefense.TILE.FINISH
+                    });
+                }
+            },
+            
+            bindGlobalEventHandler: function() {
+            	window.addEventListener('click', function(event) {
+                    this.weaponRange.style.visibility = 'hidden';
+                }.bind(this));
+            },
+            
+            start: function() {
+            	this.currentWave = this.getCurrentWave();
+            	
+            	if (this.currentWave) {
+            		this.currentEnemies = [];
+            		this.startTime = [];
+            		this.allocatedIndex = 0;
+            		
+            		this.allocateNewEnemy();
+            		
+            		window.requestAnimationFrame(this.wave.bind(this));
+            	}
+            },
+            
+            getCurrentWave: function() {
+            	return this.waveData[this.currentWaveIndex++];
+            },
+            
+            allocateNewEnemy: function() {
+            	var enemy = this.getEnemy(this.currentWave.type);
+            	var index = this.currentEnemies.length;
+            	
+            	this.currentEnemies.push(enemy);
+            	this.startTime[index] = performance.now();
+            	
+               	document.body.appendChild(enemy);
+            },
+            
+            getEnemy: function(type) {
+            	var startPoint = this.path[0];
+                var nextPoint = this.path[1];
+                
+            	return this.createElementFrom(this.enemies[type], {
+                    dataset: {
+                        currentPathIndex: 0,
+                        currentX: startPoint.x,
+                        currentY: startPoint.y,
+                        offsetX: nextPoint.x - startPoint.x,
+                        offsetY: nextPoint.y - startPoint.y,
+                        delta: 0,
+                        status: BlueOvisDefense.ENEMY.ALIVE
+                    },
+                    style: {
+                        webkitTransform: 'translate3d(' + startPoint.x + 'px, ' + startPoint.y + 'px, 0)'
+                    }
+                });
+            },
+            
+            setStartTime: function() {
+            	this.startTime[this.currentEnemies.length - 1] = performance.now();
+            },
+            
+            wave: function(t) {
+            	var currentAllocatedIndex = Math.floor(t / this.currentWave.interval);
+            	
+            	this.currentEnemies.forEach(function(enemy, index, enemies) {
+            		var elapsedTime = performance.now() - this.startTime[index];
+            		var speed, delta;
+                    
+                    if (enemy) {
+                    	speed = enemy.dataset.speed * this.baseSpeed;
+                        delta = elapsedTime % speed / speed;
+                        
+                        if (enemy.dataset.delta * 1 > delta) {
+                            this.moveEnemy(enemy, 1);
+                            this.setNextPoint(enemy);
+                        } else {
+                            this.moveEnemy(enemy, delta);
+                        }
+                        
+                        enemy.dataset.delta = delta;
+                        
+                        if (enemy.dataset.status !== BlueOvisDefense.ENEMY.ALIVE) {
+                        	setTimeout(function() {
+                        		enemies[index] = null;
+                        		document.body.removeChild(enemy);
+                        	}, 200);
+                        }
+                    }
+            	}, this);
+            	
+            	if (currentAllocatedIndex < this.currentWave.count && this.allocatedIndex !== currentAllocatedIndex) {
+                    this.allocatedIndex = currentAllocatedIndex;
+                    this.allocateNewEnemy();
+                }
+            	
+            	// TODO check game over or clear.
+            	window.requestAnimationFrame(this.wave.bind(this));
+            },
+            
+            moveEnemy: function(enemy, delta) {
+            	var dataset = enemy.dataset;
+            	var energyBar = enemy.firstChild.firstChild;
+            	var enemyPosition = this.getEnemyPosition(dataset, delta);
+            	
+            	this.underAttack(enemy, enemyPosition);
+
+            	enemy.style.webkitTransform = 'translate3d(' + enemyPosition[0] + 'px, ' + enemyPosition[1] + 'px, 0)';
+            	energyBar.style.width = (this.tileSize * (dataset.currentEnergy / dataset.energy * 1)) + 'px';
+            },
+            
+            getEnemyPosition: function(dataset, delta) {
+            	return [dataset.currentX * 1 + dataset.offsetX * delta, dataset.currentY * 1 + dataset.offsetY * delta];
+            },
+            
+            underAttack: function(enemy, enemyPosition) {
+            	var dataset = enemy.dataset;
+            	var currentPathIndex = dataset.currentPathIndex * 1;
+            	var attackers;
+            	
+            	for (var i = currentPathIndex, length = currentPathIndex + 2; i < length; i++) {
+            		attackers = this.attackers[this.path[i].index];
+                    
+                    if (attackers) {
+                        attackers.forEach(function(attacker) {
+                        	var missile = document.getElementById('missile_' + attacker.row + '_' + attacker.column);
+                            var weaponCamp = document.getElementById('map_' + attacker.row + '_' + attacker.column);
+                            var weapon = weaponCamp.firstChild;
+                            
+                            if (weaponCamp.dataset.status === BlueOvisDefense.WEAPON.AVAILABLE && dataset.status !== BlueOvisDefense.ENEMY.DEAD) {
+                           		this.shot(missile, enemyPosition);
+                           		
+                           		weaponCamp.dataset.status = BlueOvisDefense.WEAPON.UNAVAILABLE;
+                                dataset.currentEnergy = dataset.currentEnergy * 1 - (attacker.damage - dataset.resistance * 1);
+                                
+                                if (dataset.currentEnergy * 1 <= 0) {
+                                    dataset.status = BlueOvisDefense.ENEMY.DEAD;
+                                }
+
+                                setTimeout(function() {
+                                    weaponCamp.dataset.status = BlueOvisDefense.WEAPON.AVAILABLE;
+                                }, 300 * attacker.speed);
+                            }
+                        }, this);
+                    }
+            	}
+            },
+            
+            shot: function(missile, enemyPosition) {
+            	var missilePosition = this.getMissilePosition(missile);
+            	var targetX = (enemyPosition[0] - missilePosition[0]);
+            	var targetY = (enemyPosition[0] - missilePosition[0]);
+            	
+            	missile.style.opacity = 1;
+            	missile.style.webkitTransform = 'translate3d(' + this.getCenterPosition(enemyPosition[0] - missilePosition[0]) + 'px, ' + this.getCenterPosition(enemyPosition[1] - missilePosition[1]) + 'px, 0)';
+            },
+            
+            getMissilePosition: function(missile) {
+                return [this.getPixel(missile.style.left), this.getPixel(missile.style.top)];
+            },
+            
+            getCenterPosition: function(value) {
+           		return value + this.tileSize / 2;
+            },
+            
+            setNextPoint: function(enemy) {
+            	var currentPathIndex = enemy.dataset.currentPathIndex * 1 + 1;
+            	
+                var currentPoint = this.path[currentPathIndex];
+                var nextPoint = this.path[currentPathIndex + 1];
+                
+                if (nextPoint) {
+                	enemy.dataset.currentPathIndex = currentPathIndex;
+                    enemy.dataset.currentX = currentPoint.x;
+                    enemy.dataset.currentY = currentPoint.y;
+                    enemy.dataset.offsetX = nextPoint.x - currentPoint.x;
+                    enemy.dataset.offsetY = nextPoint.y - currentPoint.y;
+                } else {
+                	enemy.dataset.status = BlueOvisDefense.ENEMY.SURVIVE;
+                	// TODO penalty
+                }
+            }
+        };
+        
+        BlueOvisDefense.initialize();
+        
+        BlueOvisDefense.setMapData([0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 1, 1, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 1, 1, 1, 1, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+                                    0, 0, 0, 0, 1, 1, 1, 0, 0, 0,
+                                    0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        
+        BlueOvisDefense.setWeaponData([
+            {
+            	type: 101,
+                damage: 10,
+                speed: 1,
+                range: 1,
+                color: 'red'
+            }, 
+            {
+            	type: 102,
+                damage: 20,
+                speed: 2,
+                range: 2,
+                color: 'green'
+            },
+            {
+            	type: 103,
+                damage: 30,
+                speed: 3,
+                range: 3,
+                color: 'blue'
+            }
+        ]);
+        
+        BlueOvisDefense.setEnemyData([
+            {
+            	type: 201,
+            	energy: 100,
+            	resistance: 0,
+            	speed: 1,
+            	color: 'pink'
+            }
+        ]);
+        
+        BlueOvisDefense.setWaveData([
+            {
+            	type: 201,
+            	count: 20,
+            	interval: 1000
+            },
+            {
+            	type: 201,
+                count: 15,
+                interval: 1500,
+            	buff: {
+            		energy: 100
+                }
+            },
+            {
+            	type: 201,
+                count: 10,
+                interval: 2000,
+                buff: {
+                	energy: 100,
+                    resistance: 5
+                }
+            },
+            {
+                type: 201,
+                count: 5,
+                interval: 2500,
+                buff: {
+                    energy: 100,
+                    resistance: 5,
+                    speed: 0.5
+                }
+            }
+        ]);
+        
+        BlueOvisDefense.ready();
+        BlueOvisDefense.start();
+        
+        /*
+        var x = -100, y = 50; // x = x" - x', y = y" - y'
+        var rotate = Math.atan(x / y) * 180 / Math.PI;
+        var transform = 'rotateZ(' + rotate + 'deg)';
+        */
+    </script>
+</body>
+</html>
